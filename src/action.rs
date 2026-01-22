@@ -39,5 +39,6 @@ pub enum Action {
   EditUnitFile { unit: UnitId, path: String },
   OpenLogsInPager { logs: Vec<String> },
   ToggleFavorite(UnitId),
+  FollowLogs(UnitId),
   Noop,
 }
