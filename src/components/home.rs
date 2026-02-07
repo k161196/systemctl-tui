@@ -105,6 +105,7 @@ pub struct Home {
   pub logger: Logger,
   pub show_logger: bool,
   pub favorites: HashSet<UnitId>,
+  pub follow_logs: bool,
   pub list_focus: ListFocus,
   pub all_units: IndexMap<UnitId, UnitWithStatus>,
   pub filtered_units: StatefulList<MatchedUnit>,
@@ -219,22 +220,25 @@ impl<T> StatefulList<T> {
 impl Home {
   pub fn new(scope: Scope, limit_units: &[String]) -> Self {
     let limit_units = limit_units.to_vec();
-    let favorites = Self::load_favorites();
-    Self { scope, limit_units, favorites, ..Default::default() }
+    let config = Self::load_config();
+    let favorites = config.favorites.into_iter().collect();
+    let follow_logs = config.follow_logs;
+    Self { scope, limit_units, favorites, follow_logs, ..Default::default() }
   }
 
-  fn load_favorites() -> HashSet<UnitId> {
+  fn load_config() -> SystemctlTuiConfig {
     match load_config() {
-      Ok(config) => config.favorites.into_iter().collect(),
+      Ok(config) => config,
       Err(e) => {
-        error!("Failed to load favorites config: {:?}", e);
-        HashSet::new()
+        error!("Failed to load config: {:?}", e);
+        SystemctlTuiConfig::default()
       },
     }
   }
 
   fn save_favorites(&self) -> anyhow::Result<()> {
-    let config = SystemctlTuiConfig { favorites: self.favorites.iter().cloned().collect() };
+    let mut config = load_config().unwrap_or_default();
+    config.favorites = self.favorites.iter().cloned().collect();
     save_config(&config)
   }
 
@@ -573,6 +577,7 @@ impl Component for Home {
     // not just journalctl stuff
     let (journalctl_tx, journalctl_rx) = std::sync::mpsc::channel::<UnitId>();
     self.journalctl_tx = Some(journalctl_tx);
+    let follow_logs = self.follow_logs;
 
     // TODO: move into function
     tokio::task::spawn_blocking(move || {
@@ -657,36 +662,38 @@ impl Component for Home {
           },
         }
 
-        // Then follow the logs
-        // Splitting this into two commands is a bit of a hack that makes it easier to get the initial batch of logs
-        // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
-        let tx = tx.clone();
-        last_follow_handle = Some(tokio::spawn(async move {
-          let mut command = tokio::process::Command::new("journalctl");
-          command.arg("-u");
-          command.arg(unit.name.clone());
-          command.arg("--output=short-iso");
-          command.arg("--follow");
-          command.arg("--lines=0");
-          command.arg("--quiet");
-          command.stdout(Stdio::piped());
-          command.stderr(Stdio::piped());
+        if follow_logs {
+          // Then follow the logs
+          // Splitting this into two commands is a bit of a hack that makes it easier to get the initial batch of logs
+          // This does mean that we'll miss any logs that are written between the two commands, low enough risk for now
+          let tx = tx.clone();
+          last_follow_handle = Some(tokio::spawn(async move {
+            let mut command = tokio::process::Command::new("journalctl");
+            command.arg("-u");
+            command.arg(unit.name.clone());
+            command.arg("--output=short-iso");
+            command.arg("--follow");
+            command.arg("--lines=0");
+            command.arg("--quiet");
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
 
-          if unit.scope == UnitScope::User {
-            command.arg("--user");
-          }
+            if unit.scope == UnitScope::User {
+              command.arg("--user");
+            }
 
-          let mut child = command.spawn().expect("failed to execute process");
+            let mut child = command.spawn().expect("failed to execute process");
 
-          let stdout = child.stdout.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
 
-          let reader = tokio::io::BufReader::new(stdout);
-          let mut lines = reader.lines();
-          while let Some(line) = lines.next_line().await.unwrap() {
-            let _ = tx.send(Action::AppendLogLine { unit: unit.clone(), line });
-            let _ = tx.send(Action::Render);
-          }
-        }));
+            let reader = tokio::io::BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Some(line) = lines.next_line().await.unwrap() {
+              let _ = tx.send(Action::AppendLogLine { unit: unit.clone(), line });
+              let _ = tx.send(Action::Render);
+            }
+          }));
+        }
       }
     });
     Ok(())

@@ -15,10 +15,22 @@ use tracing_subscriber::{
 
 use crate::systemd::UnitId;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SystemctlTuiConfig {
   #[serde(default)]
   pub favorites: Vec<UnitId>,
+  #[serde(default = "default_follow_logs")]
+  pub follow_logs: bool,
+}
+
+fn default_follow_logs() -> bool {
+  false
+}
+
+impl Default for SystemctlTuiConfig {
+  fn default() -> Self {
+    Self { favorites: vec![], follow_logs: default_follow_logs() }
+  }
 }
 
 pub fn get_config_file_path() -> Result<PathBuf> {
